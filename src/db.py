@@ -97,15 +97,18 @@ def record_transaction(
                 }
 
 def delete_transaction(transaction_id: int) -> dict[str, Any] | None:
-    """Undo a transaction by reverting its balance impact and deleting the row."""
+    """Undo an income, expense, or transfer by reverting account balance(s) and deleting the row."""
     with pool.connection() as conn:
         with conn.transaction():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT t.id, t.type, t.amount, t.account_id, a.name AS account_name
+                    SELECT t.id, t.type, t.amount, t.account_id, t.to_account_id,
+                           a.name AS account_name,
+                           a2.name AS to_account_name
                     FROM transactions t
                     JOIN accounts a ON t.account_id = a.id
+                    LEFT JOIN accounts a2 ON t.to_account_id = a2.id
                     WHERE t.id = %s;
                     """,
                     (transaction_id,),
@@ -113,6 +116,31 @@ def delete_transaction(transaction_id: int) -> dict[str, Any] | None:
                 tx = cur.fetchone()
                 if not tx:
                     return None
+
+                if tx["type"] == "transfer":
+                    cur.execute(
+                        "UPDATE accounts SET balance = balance + %s WHERE id = %s RETURNING balance;",
+                        (tx["amount"], tx["account_id"]),
+                    )
+                    restored_src = cur.fetchone()
+                    assert restored_src is not None
+
+                    cur.execute(
+                        "UPDATE accounts SET balance = balance - %s WHERE id = %s RETURNING balance;",
+                        (tx["amount"], tx["to_account_id"]),
+                    )
+                    restored_dst = cur.fetchone()
+                    assert restored_dst is not None
+
+                    cur.execute("DELETE FROM transactions WHERE id = %s;", (transaction_id,))
+                    return {
+                        "type": "transfer",
+                        "amount": tx["amount"],
+                        "account": tx["account_name"],
+                        "to_account": tx["to_account_name"],
+                        "restored_balance": restored_src["balance"],
+                        "restored_to_balance": restored_dst["balance"],
+                    }
 
                 revert_delta = -tx["amount"] if tx["type"] == "income" else tx["amount"]
                 cur.execute(
@@ -125,8 +153,71 @@ def delete_transaction(transaction_id: int) -> dict[str, Any] | None:
                 cur.execute("DELETE FROM transactions WHERE id = %s;", (transaction_id,))
 
                 return {
+                    "type": tx["type"],
                     "account": tx["account_name"],
                     "amount": tx["amount"],
-                    "type": tx["type"],
                     "restored_balance": updated_acc["balance"],
+                }
+
+def record_transfer(
+        amount: Decimal,
+        from_account_name: str,
+        to_account_name: str,
+        note: str,
+        raw_message: str,
+) -> dict[str, Any]:
+    """Atomically move funds between two accounts without counting as income/expense."""
+    if from_account_name.strip().lower() == to_account_name.strip().lower():
+        raise ValueError("Source and destination accounts must be different.")
+
+    with pool.connection() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, balance FROM accounts WHERE LOWER(name) = LOWER(%s);",
+                    (from_account_name,),
+                )
+                src = cur.fetchone()
+                if not src:
+                    raise ValueError(f"Unknown source account: '{from_account_name}'")
+
+                cur.execute(
+                    "SELECT id, name, balance FROM accounts WHERE LOWER(name) = LOWER(%s);",
+                    (to_account_name,),
+                )
+                dst = cur.fetchone()
+                if not dst:
+                    raise ValueError(f"Unknown destinations account: '{to_account_name}'")
+
+                new_src_balance = src["balance"] - amount
+                new_dst_balance = dst["balance"] + amount
+
+                cur.execute(
+                    """
+                    INSERT INTO transactions (type, amount, account_id, to_account_id, note, raw_message)
+                    VALUES ('transfer', %s, %s, %s, %s, %s)
+                    RETURNING id, created_at;
+                    """,
+                    (amount, src["id"], dst["id"], note, raw_message),
+                )
+                tx = cur.fetchone()
+                assert tx is not None
+
+                cur.execute(
+                    "UPDATE accounts SET balance = %s WHERE id = %s;",
+                    (new_src_balance, src["id"]),
+                )
+                cur.execute(
+                    "UPDATE accounts SET balance = %s WHERE id = %s;", 
+                    (new_dst_balance, dst["id"]),
+                )
+
+                return {
+                    "transaction_id": tx["id"],
+                    "amount": amount,
+                    "from_account": src["name"],
+                    "to_account": dst["name"],
+                    "new_from_balance": new_src_balance,
+                    "new_to_balance": new_dst_balance,
+                    "note": note,
                 }

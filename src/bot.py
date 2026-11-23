@@ -9,6 +9,7 @@ from src.db import (
     get_reference_data,
     pool,
     record_transaction,
+    record_transfer,
 )
 from src.llm_parser import parse_message
 
@@ -39,12 +40,22 @@ class UndoTransactionView(discord.ui.View):
             )
             return
 
-        embed = discord.Embed(
-            title="↩️ Transaction Undone",
-            description=(
+        if reverted["type"] == "transfer":
+            desc = (
+                f"Reverted transfer of **{format_idr(reverted['amount'])}** "
+                f"from **{reverted['account']}** → **{reverted['to_account']}**.\n"
+                f"Restored {reverted['account']}: **{format_idr(reverted['restored_balance'])}** | "
+                f"{reverted['to_account']}: **{format_idr(reverted['restored_to_balance'])}**"
+            )
+        else:
+            desc = (
                 f"Reverted **{format_idr(reverted['amount'])}** on **{reverted['account']}**.\n"
                 f"Restored Balance: **{format_idr(reverted['restored_balance'])}**"
-            ),
+            )
+
+        embed = discord.Embed(
+            title="↩️ Transaction Undone",
+            description=desc,
             color=discord.Color.light_grey(),   
         )
         await interaction.response.edit_message(embed=embed, view=self)
@@ -92,6 +103,47 @@ class TallyBot(discord.Client):
 
                     embed.set_footer(text=f"Total Net Balance: {format_idr(total)}")
                     await message.reply(embed=embed, mention_author=False)
+                    return
+
+                if (
+                    parsed.intent == "record_transfer"
+                    and parsed.amount
+                    and parsed.amount > 0
+                    and parsed.account
+                    and parsed.to_account
+                ):
+                    result = await asyncio.to_thread(
+                        record_transfer,
+                        Decimal(str(parsed.amount)),
+                        parsed.account,
+                        parsed.to_account,
+                        parsed.note or f"Transfer {parsed.account} -> {parsed.to_account}",
+                        message.content,
+                    )
+                    embed = discord.Embed(
+                        title="🔄 Transfer Recorded",
+                        color=discord.Color.blue(),
+                    )
+                    embed.add_field(
+                        name="Amount",
+                        value=f"**{format_idr(result['amount'])}**",
+                        inline=True,
+                    )
+                    embed.add_field(
+                        name="From",
+                        value=f"{result['from_account']}\n({format_idr(result['new_from_balance'])})",
+                        inline=True,
+                    )
+                    embed.add_field(
+                        name="To",
+                        value=f"{result['to_account']}\n({format_idr(result['new_to_balance'])})",
+                        inline=True,
+                    )
+                    if result["note"]:
+                        embed.add_field(name="Note", value=result["note"], inline=False)
+
+                    view = UndoTransactionView(result["transaction_id"])
+                    await message.reply(embed=embed, view=view, mention_author=False)
                     return
 
                 if (
@@ -157,15 +209,6 @@ class TallyBot(discord.Client):
                 await message.reply(
                     f"❌ Error processing message: `{exc}`", mention_author=False
                 )
-
-        t0 = time.perf_counter()
-        accounts, categories = await asyncio.to_thread(get_reference_data)
-
-        t1 = time.perf_counter()
-        parsed = await asyncio.to_thread(parse_message, message.content, accounts, categories)
-
-        t2 = time.perf_counter()
-        print(f"[Timing] DB fetch: {t1 - t0:.2f}s | Gemini: {t2 - t1:.2f}s")
 
 if __name__ == "__main__":
     bot = TallyBot()
