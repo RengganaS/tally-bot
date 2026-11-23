@@ -12,6 +12,9 @@ pool = ConnectionPool(
     kwargs={"prepare_threshold": None, "row_factory": dict_row}
 )
 
+VALID_ACCOUNT_TYPES = {"bank", "ewallet", "cash", "credit"}
+VALID_CATEGORY_TYPES = {"income", "expense"}
+
 def get_reference_data() -> tuple[list[str], list[str]]:
     """Fetch current account and category names to ground the LLM prompt."""
     with pool.connection() as conn:
@@ -221,3 +224,72 @@ def record_transfer(
                     "new_to_balance": new_dst_balance,
                     "note": note,
                 }
+
+def create_account(
+        name: str,
+        account_type: str = "bank",
+        initial_balance: Decimal = Decimal("0"),
+) -> dict[str, Any]:
+    """Create a new financial account if it does not already exists."""
+    clean_name = name.strip()
+    clean_type = account_type.strip().lower()
+    if clean_type not in VALID_ACCOUNT_TYPES:
+        clean_type = "bank"
+
+    with pool.connection() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name FROM accounts WHERE LOWER(name) = LOWER(%s);",
+                    (clean_name,),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    raise ValueError(f"Account '{existing['name']}' already exists.")
+
+                cur.execute(
+                    """
+                    INSERT INTO accounts (name, account_type, balance)
+                    VALUES (%s, %s, %s)
+                    RETURNING id, name, account_type, balance;
+                    """,
+                    (clean_name, clean_type, initial_balance),
+                )
+                acc = cur.fetchone()
+                assert acc is not None
+                return acc
+
+def create_category(
+        name: str, 
+        category_type: str = "expense",
+) -> dict[str, Any]:
+    """Create a new income or expense category if it does not already exists."""
+    clean_name = name.strip()
+    clean_type = category_type.strip().lower()
+    if clean_type not in VALID_CATEGORY_TYPES:
+        clean_type = "expense"
+
+    with pool.connection() as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, type FROM categories WHERE LOWER(name) = LOWER(%s);",
+                    (clean_name,),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    raise ValueError(
+                        f"Category '{existing['name']}' ({existing['type']}) already exists."
+                    )
+
+                cur.execute(
+                    """
+                    INSERT INTO categories (name, type)
+                    VALUES (%s, %s)
+                    RETURNING id, name, type;
+                    """,
+                    (clean_name, clean_type)
+                )
+                cat = cur.fetchone()
+                assert cat is not None
+                return cat

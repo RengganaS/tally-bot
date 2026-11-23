@@ -10,6 +10,8 @@ from src.db import (
     pool,
     record_transaction,
     record_transfer,
+    create_account,
+    create_category,
 )
 from src.llm_parser import parse_message
 
@@ -104,6 +106,54 @@ class TallyBot(discord.Client):
                     embed.set_footer(text=f"Total Net Balance: {format_idr(total)}")
                     await message.reply(embed=embed, mention_author=False)
                     return
+
+                if parsed.intent == "create_account" and parsed.account:
+                    initial_bal = (
+                        Decimal(str(parsed.amount))
+                        if parsed.amount and parsed.amount > 0
+                        else Decimal("0")
+                    )
+
+                    acc = await asyncio.to_thread(
+                        create_account,
+                        parsed.account,
+                        parsed.account_type or "bank",
+                        initial_bal,
+                    )
+
+                    embed = discord.Embed(
+                        title="🏦 Account Created",
+                        color=discord.Color.teal(),
+                    )
+
+                    embed.add_field(name="Account", value=acc["name"], inline=True)
+                    embed.add_field(
+                        name="Type", value=acc["account_type"], inline=True
+                    )
+
+                    embed.add_field(
+                        name="Starting Balance",
+                        value=format_idr(acc["balance"]),
+                        inline=True,
+                    )
+                    await message.reply(embed=embed, mention_author=False)
+                    return
+
+                if parsed.intent == "create_category" and parsed.category:
+                    cat = await asyncio.to_thread(
+                        create_category,
+                        parsed.category,
+                        parsed.tx_type or "expense",
+                    )
+                    embed = discord.Embed(
+                        title="🏷️ Category Created",
+                        color=discord.Color.teal(),
+                    )
+                    embed.add_field(name="Category", value=cat["name"], inline=True)
+                    embed.add_field(name="Type", value=cat["type"], inline=True)
+                    await message.reply(embed=embed, mention_author=False)
+                    return
+
 
                 if (
                     parsed.intent == "record_transfer"

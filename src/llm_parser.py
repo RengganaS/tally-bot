@@ -13,20 +13,29 @@ MODEL_CHAIN = [
 ]
 
 class ParsedFinanceIntent(BaseModel):
-    intent: Literal["record_transaction", "record_transfer", "check_balance", "unknown"] = Field(
-        description="The user's primary intent."
-    )
+    intent: Literal[
+        "record_transaction",
+        "record_transfer",
+        "check_balance",
+        "create_account",
+        "create_category",
+        "unknown",
+    ] = Field(description="The user's primary intent.")
     tx_type: Optional[Literal["expense", "income"]] = Field(
         default=None,
-        description="Set to 'expense' or 'income' when intent is 'record_transaction'.",
+        description="Set to 'expense' or 'income' when intent is 'record_transaction' or 'create_category'.",
     )
     amount: Optional[float] = Field(
         default=None,
-        description="Numeric amount in IDR (convert shorthand like '30k' -> 30000, '1.5jt' -> 1500000).",
+        description="Numeric amount in IDR (or initial balance when creating an account; defaults to 0 if omitted).",
     )
     account: Optional[str] = Field(
         default=None,
-        description="Source/primary account name from Available accounts.",
+        description="Source/primary account name from Available accounts, or new account name when intent is 'create_account'.",
+    )
+    account_type: Optional[Literal["bank", "ewallet", "cash", "credit"]] = Field(
+        default=None,
+        description="Account type when intent is 'create_account' (infer 'ewallet' for GoPay/OVO/Dana/ShopeePay, 'bank' for BCA/Mandiri/BRI/BNI/SeaBank/Jago, etc.).",
     )
     to_account: Optional[str] = Field(
         default=None,
@@ -34,7 +43,7 @@ class ParsedFinanceIntent(BaseModel):
     )
     category: Optional[str] = Field(
         default=None,
-        description="Matched category name from Available categories (only for income/expense).",
+        description="Matched category name from Available categories, or new category name when intent is 'create_category'.",
     )
     note: Optional[str] = Field(
         default=None,
@@ -63,6 +72,7 @@ def parse_message(
         4. If the user asks how much money they have, what their balance is, or 'cek saldo', set intent to 'check_balance'.
         5. If the message is unrelated chatter or missing an amount, set intent to 'unknown' and explain briefly in reply_hint.
         6. If the user moves money between two of their own accounts (e.g., 'transfer 500k dari Mandiri ke GoPay', 'topup gopay 200rb dari BCA', 'tarik tunai 100k dari Mandiri ke Cash'), set intent to 'record_transfer', put the source account in 'account', and put the receiving account in 'to_account'. If either account is missing, set intent to 'unknown' and ask in reply_hint.
+        7. If the user wants to add/create a new account or wallet (e.g., 'tambah akun Dana saldo 100k', 'add account SeaBank'), set intent to 'create_account', put the new name in 'account', infer 'account_type' ('bank', 'ewallet', 'cash', or 'credit'), and put any starting balance in 'amount' (0 if not mentioned). If the user wants to add/create a new category (e.g., 'tambah kategori Coffee', 'add income category Bonus'), set intent to 'create_category', put the new name in 'category', and set 'tx_type' to 'income' or 'expense' (default 'expense').
     """
 
     last_error: Exception | None = None
