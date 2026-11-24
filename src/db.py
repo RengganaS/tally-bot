@@ -162,6 +162,32 @@ def delete_transaction(transaction_id: int) -> dict[str, Any] | None:
                     "restored_balance": updated_acc["balance"],
                 }
 
+def get_recent_transactions(limit: int = 5) -> list[dict[str, Any]]:
+    """Fetch the N most recent transactions with account and category names."""
+    safe_limit = max(1, min(limit, 20))
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.id,
+                       t.type,
+                       t.amount,
+                       t.note,
+                       t.created_at,
+                       a.name AS account_name,
+                       a2.name AS to_account_name,
+                       c.name AS category_name
+                FROM transactions t
+                JOIN accounts a ON t.account_id = a.id
+                LEFT JOIN accounts a2 ON t.to_account_id = a2.id
+                LEFT JOIN categories c ON t.category_id = c.id
+                ORDER BY t.created_at DESC, t.id DESC
+                LIMIT %s;
+                """,
+                (safe_limit,),
+            )
+            return cur.fetchall()
+
 def record_transfer(
         amount: Decimal,
         from_account_name: str,

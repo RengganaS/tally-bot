@@ -4,16 +4,18 @@ from decimal import Decimal
 import discord
 from src.config import ALLOWED_USER_ID, DISCORD_BOT_TOKEN, FINANCE_CHANNEL_ID
 from src.db import (
+    create_account,
+    create_category,
     delete_transaction,
     get_all_balances,
+    get_recent_transactions,
     get_reference_data,
     pool,
     record_transaction,
     record_transfer,
-    create_account,
-    create_category,
 )
 from src.llm_parser import parse_message
+from zoneinfo import ZoneInfo
 
 def format_idr(amount: Decimal) -> str:
     return f"Rp {amount:,.0f}".replace(",", ".")
@@ -104,6 +106,50 @@ class TallyBot(discord.Client):
                         )
 
                     embed.set_footer(text=f"Total Net Balance: {format_idr(total)}")
+                    await message.reply(embed=embed, mention_author=False)
+                    return
+
+                if parsed.intent == "check_history":
+                    limit = parsed.limit if parsed.limit and parsed.limit > 0 else 5
+                    rows = await asyncio.to_thread(get_recent_transactions, limit)
+
+                    if not rows:
+                        await message.reply(
+                            "📭 No transactions recorded yet.", mention_author=False
+                        )
+                        return
+
+                    wib = ZoneInfo("Asia/Jakarta")
+                    lines: list[str] = []
+                    for row in rows:
+                        ts = row["created_at"]
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+                        date_str = ts.astimezone(wib).strftime("%d %b %H:%M")
+
+                        if row["type"] == "transfer":
+                            icon = "🔄"
+                            amount_str = format_idr(row["amount"])
+                            route = f"{row['account_name']} → {row['to_account_name']}"
+                        elif row["type"] == "income":
+                            icon = "📈"
+                            amount_str = f"+{format_idr(row['amount'])}"
+                            route = f"{row['account_name']} • {row['category_name'] or 'Other'}"
+                        else:
+                            icon = "💸"
+                            amount_str = f"-{format_idr(row['amount'])}"
+                            route = f"{row['account_name']} • {row['category_name'] or 'Other'}"
+
+                        note_part = f" — *{row['note']}*" if row["note"] else ""
+                        lines.append(
+                            f"{icon} **#{row['id']}** `{date_str}` | **{amount_str}** ({route}){note_part}"
+                        )
+
+                    embed = discord.Embed(
+                        title=f" Last {len(rows)} Transactions",
+                        description="\n".join(lines),
+                        color=discord.Color.blurple(),
+                    )
                     await message.reply(embed=embed, mention_author=False)
                     return
 

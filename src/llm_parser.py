@@ -17,6 +17,7 @@ class ParsedFinanceIntent(BaseModel):
         "record_transaction",
         "record_transfer",
         "check_balance",
+        "check_history",
         "create_account",
         "create_category",
         "unknown",
@@ -49,6 +50,10 @@ class ParsedFinanceIntent(BaseModel):
         default=None,
         description="Short clean description (e.g., 'Lunch', 'Topup GoPay', 'ATM withdrawal').",
     )
+    limit: Optional[int] = Field(
+        default=None,
+        description="Number of recent transactions requested when intent is 'check_history' (default 5 if unspecified).",
+    )
     reply_hint: Optional[str] = Field(
         default=None,
         description="Helpful clarification message if intent is 'unknown' or required info is missing.",
@@ -73,6 +78,7 @@ def parse_message(
         5. If the message is unrelated chatter or missing an amount, set intent to 'unknown' and explain briefly in reply_hint.
         6. If the user moves money between two of their own accounts (e.g., 'transfer 500k dari Mandiri ke GoPay', 'topup gopay 200rb dari BCA', 'tarik tunai 100k dari Mandiri ke Cash'), set intent to 'record_transfer', put the source account in 'account', and put the receiving account in 'to_account'. If either account is missing, set intent to 'unknown' and ask in reply_hint.
         7. If the user wants to add/create a new account or wallet (e.g., 'tambah akun Dana saldo 100k', 'add account SeaBank'), set intent to 'create_account', put the new name in 'account', infer 'account_type' ('bank', 'ewallet', 'cash', or 'credit'), and put any starting balance in 'amount' (0 if not mentioned). If the user wants to add/create a new category (e.g., 'tambah kategori Coffee', 'add income category Bonus'), set intent to 'create_category', put the new name in 'category', and set 'tx_type' to 'income' or 'expense' (default 'expense').
+        8. If the user asks to see recent transactions, transaction history, or mutasi (e.g., 'cek transaksi terakhir', 'show last 10 transactions', 'riwayat pengeluaran'), set intent to 'check_history' and extract any requested count into 'limit' (default 5).
     """
 
     last_error: Exception | None = None
