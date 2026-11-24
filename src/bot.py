@@ -1,5 +1,7 @@
 import asyncio
-import time
+import calendar
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 import discord
 from src.config import ALLOWED_USER_ID, DISCORD_BOT_TOKEN, FINANCE_CHANNEL_ID
@@ -9,13 +11,13 @@ from src.db import (
     delete_transaction,
     get_all_balances,
     get_recent_transactions,
+    get_monthly_summary,
     get_reference_data,
     pool,
     record_transaction,
     record_transfer,
 )
 from src.llm_parser import parse_message
-from zoneinfo import ZoneInfo
 
 def format_idr(amount: Decimal) -> str:
     return f"Rp {amount:,.0f}".replace(",", ".")
@@ -63,6 +65,10 @@ class UndoTransactionView(discord.ui.View):
             color=discord.Color.light_grey(),   
         )
         await interaction.response.edit_message(embed=embed, view=self)
+
+def render_bar(pct: float, length: int = 10) -> str:
+    filled = round((pct / 100) * length)
+    return "█" * filled + "░" * (length - filled)
 
 class TallyBot(discord.Client):
     def __init__(self):
@@ -150,6 +156,72 @@ class TallyBot(discord.Client):
                         description="\n".join(lines),
                         color=discord.Color.blurple(),
                     )
+                    await message.reply(embed=embed, mention_author=False)
+                    return
+
+                if parsed.intent == "check_summary":
+                    now_wib = datetime.now(ZoneInfo("Asia/Jakarta"))
+                    target_year = parsed.year or now_wib.year
+                    target_month = (
+                        parsed.month
+                        if parsed.month and 1 <= parsed.month <= 12
+                        else now_wib.month
+                    )
+
+                    summary = await asyncio.to_thread(
+                        get_monthly_summary, target_year, target_month
+                    )
+                    month_label = f"{calendar.month_name[target_month]} {target_year}"
+
+                    total_inc: Decimal = summary["total_income"]
+                    total_exp: Decimal = summary["total_expense"]
+                    net: Decimal = summary["net"]
+                    net_sign = "+" if net >= 0 else "-"
+
+                    embed = discord.Embed(
+                        title=f"📊 Monthly Summary — {month_label}",
+                        color=discord.Color.gold() if net >= 0 else discord.Color.orange(),
+                    )
+                    embed.add_field(
+                        name="📈 Income",
+                        value=f"+{format_idr(total_inc)}",
+                        inline=True,
+                    )
+                    embed.add_field(
+                        name="💸 Expenses",
+                        value=f"-{format_idr(total_exp)}",
+                        inline=True,
+                    )
+                    embed.add_field(
+                        name="⚖️ Net Cash Flow",
+                        value=f"**{net_sign}{format_idr(abs(net))}**",
+                        inline=True,
+                    )
+
+                    breakdown = summary["breakdown"]
+                    if breakdown and total_exp > 0:
+                        lines: list[str] = []
+                        for row in breakdown:
+                            pct = float((row["total"] / total_exp) * 100)
+                            bar = render_bar(pct)
+                            lines.append(
+                                f"`{bar}` **{pct:4.1f}%** — **{row['category']}** "
+                                f"({format_idr(row['total'])}, {row['tx_count']}x)"
+                            )
+
+                        embed.add_field(
+                            name="🗂️ Spending by Category",
+                            value="\n".join(lines),
+                            inline=False,
+                        )
+
+                    else:
+                        embed.add_field(
+                            name="🗂️ Spending by Category",
+                            value="*No expenses recorded for this month.*",
+                            inline=False,
+                        )
+
                     await message.reply(embed=embed, mention_author=False)
                     return
 

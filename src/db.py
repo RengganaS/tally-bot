@@ -319,3 +319,49 @@ def create_category(
                 cat = cur.fetchone()
                 assert cat is not None
                 return cat
+
+def get_monthly_summary(year: int, month: int) -> dict[str, Any]:
+    """Return total income, total expense, net cashflow, and category breakdown for a WIB calendar month."""
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT type, COALESCE(SUM(amount), 0) AS total
+                FROM transactions
+                WHERE EXTRACT(YEAR FROM (created_at AT TIME ZONE 'Asia/Jakarta')) = %s
+                  AND EXTRACT(MONTH FROM (created_at AT TIME ZONE 'Asia/Jakarta')) = %s
+                  AND type IN ('income', 'expense')
+                GROUP BY type;
+                """,
+                (year, month),
+            )
+
+            totals = {"income": Decimal("0"), "expense": Decimal("0")}
+            for row in cur.fetchall():
+                totals[row["type"]] = row["total"]
+
+            cur.execute(
+                """
+                SELECT COALESCE(c.name, 'Other') AS category,
+                       COUNT(t.id) AS tx_count,
+                       SUM(t.amount) AS total
+                FROM transactions t
+                LEFT JOIN categories c ON t.category_id = c.id
+                WHERE EXTRACT(YEAR FROM (t.created_at AT TIME ZONE 'Asia/Jakarta')) = %s
+                  AND EXTRACT(MONTH FROM (t.created_at AT TIME ZONE 'Asia/Jakarta')) = %s
+                  AND t.type = 'expense'
+                GROUP BY COALESCE(c.name, 'Other')
+                ORDER BY total DESC;
+                """,
+                (year, month),
+            )
+            breakdown = cur.fetchall()
+
+            return {
+                "year": year,
+                "month": month,
+                "total_income": totals["income"],
+                "total_expense": totals["expense"],
+                "net": totals["income"] - totals["expense"],
+                "breakdown": breakdown,
+            }
